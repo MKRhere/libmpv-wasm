@@ -54,11 +54,3 @@ interface Vector<T> {
     set(idx: number, val: T): boolean;
     delete(): void;
 }
-
-interface ResumeInfo {
-    blurayTitle: number;
-    objectIdx: number;
-    playlistId: number;
-    playItemId: number;
-    resumeTime: number;
-}

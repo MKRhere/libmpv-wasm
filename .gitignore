@@ -11,3 +11,6 @@ src/libmpv.d.ts
 /public
 
 .DS_Store
+
+/scripts
+/dist-wasm

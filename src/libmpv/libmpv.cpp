@@ -22,9 +22,6 @@
 #include <AL/al.h>
 #include <AL/alc.h>
 
-#include "thumbnail.h"
-#include "libbluray.h"
-
 using namespace emscripten;
 using namespace std;
 
@@ -38,7 +35,6 @@ mpv_handle *mpv;
 mpv_render_context *mpv_gl;
 pthread_t main_thread;
 pthread_t side_thread;
-bluray_disc_info_t disc_info;
 em_proxying_queue* main_queue = em_proxying_queue_create();
 
 void main_loop();
@@ -110,6 +106,8 @@ int main(int argc, char const *argv[]) {
     mpv_render_context_set_update_callback(mpv_gl, on_mpv_render_update, NULL);
 
     mpv_observe_property(mpv, 0, "pause", MPV_FORMAT_FLAG);
+    mpv_observe_property(mpv, 0, "paused-for-cache", MPV_FORMAT_FLAG);
+    mpv_observe_property(mpv, 0, "core-idle", MPV_FORMAT_FLAG);
     mpv_observe_property(mpv, 0, "duration", MPV_FORMAT_DOUBLE);
     mpv_observe_property(mpv, 0, "playback-time", MPV_FORMAT_DOUBLE);
     mpv_observe_property(mpv, 0, "vid", MPV_FORMAT_INT64);
@@ -325,41 +323,6 @@ void load_file(string path, string options) {
     emscripten_proxy_async(main_queue, side_thread, load_file_proxy, args_ptr);
 }
 
-void open_disc_proxy(void* args) {
-    filesystem::path path = *(string*)args;
-    string root_name = *next(path.begin());
-    string root_path = "/" + root_name;
-    
-    if (!filesystem::is_directory(root_path)) {
-        printf("mounting directory at %s\n", root_path.c_str());
-        backend_t backend = wasmfs_create_externalfs_backend(root_name.c_str());
-        int err = wasmfs_create_directory(root_path.c_str(), 0777, backend);
-        if (err) {
-            fprintf(stderr, "Couldn't mount directory at %s\n", root_path.c_str());
-            return;
-        }
-    }
-    
-    if (!filesystem::is_directory(path)) {
-        fprintf(stderr, "%s is not a directory\n", path.c_str());
-        return;
-    }
-
-    disc_info = open_bd_disc(path);
-    free(args);
-}
-
-uint32_t open_disc(string path) {
-    string* path_ptr = (string*)malloc(sizeof(string));
-    *path_ptr = path;
-
-    return (uint32_t)emscripten_proxy_promise(main_queue, side_thread, open_disc_proxy, path_ptr);
-}
-
-bluray_disc_info_t get_disc_info() {
-    return disc_info;
-}
-
 void load_files(vector<string> paths) {
     // printf("loading %lu paths\n", paths.size());
 
@@ -371,48 +334,6 @@ void load_files(vector<string> paths) {
         mpv_command_async(mpv, 0, cmd);
     }
 }
-
-// void load_url_proxy(void* args) {
-//     string url = *(string*)args;
-//     filesystem::path path = url.substr(url.find("/") + 1);
-//     string root_path = "/" + string(*next(path.begin()));
-//     string root_url = "http://localhost:5000/proxy/" + url.substr(0, url.find("/", url.find("//") + 2));
-    
-//     if (!filesystem::is_directory(root_path)) {
-//         printf("mounting directory at %s\n", root_path.c_str());
-//         backend_t backend = wasmfs_create_fetchfs_backend(root_url.c_str());
-//         int err = wasmfs_create_directory(root_path.c_str(), 0777, backend);
-//         if (err) {
-//             fprintf(stderr, "Couldn't mount directory at %s\n", root_path.c_str());
-//             return;
-//         }
-//     }
-
-//     ifstream(path, ios::binary);
-
-//     // if (!filesystem::exists(path)) {
-//     //     fprintf(stderr, "file does not exist\n");
-//     //     return;
-//     // }
-
-//     const char * cmd[] = {"loadfile", path.c_str(), "replace", NULL};
-//     mpv_command_async(mpv, 0, cmd);
-//     free(args);
-// }
-
-// void load_url(string url) {
-//     printf("loading %s\n", url.c_str());
-    
-//     if (url.find("http://") + url.find("https://") < string::npos) {
-//         fprintf(stderr, "unsupported protocol\n");
-//         return;
-//     }
-
-//     string* url_ptr = (string*)malloc(sizeof(string));
-//     *url_ptr = url;
-
-//     emscripten_proxy_async(main_queue, side_thread, load_url_proxy, url_ptr);
-// }
 
 void toggle_play() {
     const char * cmd[] = {"cycle", "pause", NULL};
@@ -590,21 +511,6 @@ void create_mpv_map_obj(mpv_node_list *map) {
     }
 }
 
-void *thumbnail_thread_gen(void *args) {
-    string *path_ptr = (string *)(args);
-    generate_thumbnail(path_ptr, 15);
-    free(args);
-
-    return NULL;
-}
-
-void create_thumbnail_thread(string path) {
-    pthread_t thumbnail_thread;
-    string *path_ptr = (string *)malloc(sizeof(path));
-    *path_ptr = path;
-    pthread_create(&thumbnail_thread, NULL, thumbnail_thread_gen, path_ptr);
-}
-
 void die(const char *msg) {
     fprintf(stderr, "%s\n", msg);
     exit(1);
@@ -615,7 +521,6 @@ EMSCRIPTEN_BINDINGS(libmpv) {
 
     emscripten::function("loadFile", &load_file);
     emscripten::function("loadFiles", &load_files);
-    // emscripten::function("loadUrl", &load_url);
     emscripten::function("togglePlay", &toggle_play);
     emscripten::function("stop", &stop);
     emscripten::function("setPlaybackTime", &set_playback_time_pos);
@@ -633,173 +538,4 @@ EMSCRIPTEN_BINDINGS(libmpv) {
     emscripten::function("clearShaders", &clear_shaders);
     emscripten::function("getShaderCount", &get_shader_count);
     emscripten::function("matchWindowScreenSize", &match_window_screen_size);
-    emscripten::function("createThumbnail", &create_thumbnail_thread);
-
-    register_vector<uint16_t>("UInt16Vector");
-    register_vector<uint32_t>("UInt32Vector");
-    register_vector<bluray_mobj_cmd_t>("MobjCmdVector");
-    register_vector<bluray_mobj_object_t>("MobjObjectVector");
-    register_vector<effect_object_t>("EffectObjectVector");
-    register_vector<effect_t>("EffectVector");
-    register_vector<bog_t>("BogVector");
-    register_vector<page_t>("PageVector");
-    register_vector<color_t>("ColorVector");
-    register_vector<vector<color_t>>("PaletteVector");
-    register_vector<BLURAY_TITLE_MARK>("BlurayTitleMarkVector");
-    register_vector<bluray_clip_info_t>("BlurayClipInfoVector");
-
-    register_map<string, window_t>("WindowMap");
-    register_map<string, string>("StringMap");
-    register_map<string, picture_extended_t>("PictureMap");
-    register_map<string, button_t>("ButtonMap");
-    register_map<string, bluray_playlist_info_t>("BlurayPlaylistMap");
-
-    value_object<bluray_hdmv_insn_t>("HdmvInsn")
-        .field("opCnt", &bluray_hdmv_insn_t::op_cnt)
-        .field("grp", &bluray_hdmv_insn_t::grp)
-        .field("subGrp", &bluray_hdmv_insn_t::sub_grp)
-        .field("immOp1", &bluray_hdmv_insn_t::imm_op1)
-        .field("immOp2", &bluray_hdmv_insn_t::imm_op2)
-        .field("branchOpt", &bluray_hdmv_insn_t::branch_opt)
-        .field("cmpOpt", &bluray_hdmv_insn_t::cmp_opt)
-        .field("setOpt", &bluray_hdmv_insn_t::set_opt);
-
-    value_object<bluray_mobj_cmd_t>("MobjCmd")
-        .field("insn", &bluray_mobj_cmd_t::insn)
-        .field("dst", &bluray_mobj_cmd_t::dst)
-        .field("src", &bluray_mobj_cmd_t::src);
-
-    value_object<bluray_mobj_object_t>("MobjObject")
-        .field("resumeIntentionFlag", &bluray_mobj_object_t::resume_intention_flag)
-        .field("menuCallMask", &bluray_mobj_object_t::menu_call_mask)
-        .field("titleSearchMask", &bluray_mobj_object_t::title_search_mask)
-        .field("numCmds", &bluray_mobj_object_t::num_cmds)
-        .field("cmds", &bluray_mobj_object_t::cmds);
-
-    value_object<bluray_mobj_objects_t>("MobjObjects")
-        .field("mobjVersion", &bluray_mobj_objects_t::mobj_version)
-        .field("numObjects", &bluray_mobj_objects_t::num_objects)
-        .field("objects", &bluray_mobj_objects_t::objects);
-
-    value_object<button_navigation_t>("ButtonNavigation")
-        .field("up", &button_navigation_t::up)
-        .field("down", &button_navigation_t::down)
-        .field("left", &button_navigation_t::left)
-        .field("right", &button_navigation_t::right);
-
-    value_object<button_state_t>("ButtonState")
-        .field("start", &button_state_t::start)
-        .field("stop", &button_state_t::stop);
-
-    value_object<button_t>("Button")
-        .field("buttonId", &button_t::button_id)
-        .field("v", &button_t::v)
-        .field("f", &button_t::f)
-        .field("autoAction", &button_t::auto_action)
-        .field("x", &button_t::x)
-        .field("y", &button_t::y)
-        .field("navigation", &button_t::navigation)
-        .field("normal", &button_t::normal)
-        .field("normalFlags", &button_t::normal_flags)
-        .field("selected", &button_t::selected)
-        .field("selectedFlags", &button_t::selected_flags)
-        .field("activated", &button_t::activated)
-        .field("cmdsCount", &button_t::cmds_count)
-        .field("commands", &button_t::commands);
-
-    value_object<bog_t>("Bog")
-        .field("defButton", &bog_t::def_button)
-        .field("buttonCount", &bog_t::button_count)
-        .field("buttonIds", &bog_t::button_ids);
-
-    value_object<window_t>("Window")
-        .field("id", &window_t::id)
-        .field("x", &window_t::x)
-        .field("y", &window_t::y)
-        .field("width", &window_t::width)
-        .field("height", &window_t::height);
-
-    value_object<effect_object_t>("EffectObject")
-        .field("id", &effect_object_t::id)
-        .field("window", &effect_object_t::window)
-        .field("x", &effect_object_t::x)
-        .field("y", &effect_object_t::y);
-
-    value_object<effect_t>("Effect")
-        .field("duration", &effect_t::duration)
-        .field("palette", &effect_t::palette)
-        .field("objectCount", &effect_t::object_count)
-        .field("objects", &effect_t::objects);
-
-    value_object<window_effect_t>("WindowEffect")
-        .field("windows", &window_effect_t::windows)
-        .field("effects", &window_effect_t::effects);
-
-    value_object<page_t>("Page")
-        .field("id", &page_t::id)
-        .field("uo", &page_t::uo)
-        .field("inEffects", &page_t::in_effects)
-        .field("outEffects", &page_t::out_effects)
-        .field("framerateDivider", &page_t::framerate_divider)
-        .field("defButton", &page_t::def_button)
-        .field("defActivated", &page_t::def_activated)
-        .field("palette", &page_t::palette)
-        .field("bogCount", &page_t::bog_count)
-        .field("bogs", &page_t::bogs)
-        .field("buttons", &page_t::buttons);
-
-    value_object<menu_t>("Menu")
-        .field("width", &menu_t::width)
-        .field("height", &menu_t::height)
-        .field("pageCount", &menu_t::page_count)
-        .field("pages", &menu_t::pages);
-
-    value_object<color_t>("Color")
-        .field("id", &color_t::id)
-        .field("r", &color_t::r)
-        .field("g", &color_t::g)
-        .field("b", &color_t::b)
-        .field("alpha", &color_t::alpha);
-
-    value_object<picture_extended_t>("Picture")
-        .field("id", &picture_extended_t::id)
-        .field("width", &picture_extended_t::width)
-        .field("height", &picture_extended_t::height)
-        .field("data", &picture_extended_t::data);
-
-    value_object<igs_t>("Igs")
-        .field("menu", &igs_t::menu)
-        .field("palettes", &igs_t::palettes)
-        .field("pictures", &igs_t::pictures);
-
-    value_object<BLURAY_TITLE_MARK>("BlurayTitleMark")
-        .field("idx", &BLURAY_TITLE_MARK::idx)
-        .field("type", &BLURAY_TITLE_MARK::type)
-        .field("start", &BLURAY_TITLE_MARK::start)
-        .field("duration", &BLURAY_TITLE_MARK::duration)
-        .field("offset", &BLURAY_TITLE_MARK::offset)
-        .field("clipRef", &BLURAY_TITLE_MARK::clip_ref);
-
-    value_object<bluray_clip_info_t>("BlurayClipInfo")
-        .field("clipId", &bluray_clip_info_t::clip_id)
-        .field("inTime", &bluray_clip_info_t::in_time)
-        .field("outTime", &bluray_clip_info_t::out_time);
-
-    value_object<bluray_playlist_info_t>("BlurayPlaylistInfo")
-        .field("clips", &bluray_playlist_info_t::clips)
-        .field("marks", &bluray_playlist_info_t::marks)
-        .field("igs", &bluray_playlist_info_t::igs);
-
-    value_object<bluray_disc_info_t>("BlurayDiscInfo")
-        .field("discName", &bluray_disc_info_t::disc_name)
-        .field("numPlaylists", &bluray_disc_info_t::num_playlists)
-        .field("firstPlaySupported", &bluray_disc_info_t::first_play_supported)
-        .field("firstPlayIdx", &bluray_disc_info_t::first_play_idx)
-        .field("topMenuSupported", &bluray_disc_info_t::top_menu_supported)
-        .field("titleMap", &bluray_disc_info_t::title_map)
-        .field("playlists", &bluray_disc_info_t::playlists)
-        .field("mobjObjects", &bluray_disc_info_t::mobj);
-
-    emscripten::function("bdOpen", &open_disc);
-    emscripten::function("bdGetInfo", &get_disc_info);
 }
