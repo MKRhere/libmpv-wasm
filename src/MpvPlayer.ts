@@ -247,6 +247,18 @@ export default class MpvPlayer {
 
     /* --- Playback controls (thin wrappers over the wasm module) --- */
 
+    /** Origin of the media server, e.g. `http://localhost:3000`. */
+    setStreamBaseUrl(baseUrl: string) {
+        this.module.setStreamBaseUrl(baseUrl.replace(/\/$/, ''));
+    }
+
+    /** Load a file over HTTP via the `theatre://` stream_cb protocol.
+     *  @param path Server path such as `/movies/foo.mkv`. */
+    loadStream(path: string, options = '') {
+        const normalized = path.startsWith('/') ? path : `/${path}`;
+        this.module.loadStream(normalized, options);
+    }
+
     loadFile(path: string, options = '') {
         this.module.loadFile(path, options);
     }

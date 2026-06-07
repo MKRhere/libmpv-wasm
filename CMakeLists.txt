@@ -20,7 +20,7 @@ link_directories(
     ${SDL3_STATIC_LIBRARY_DIRS}
 )
 
-add_executable(libmpv src/libmpv/libmpv.cpp)
+add_executable(libmpv src/libmpv/libmpv.cpp src/libmpv/theatre_stream.cpp)
 
 set(CMAKE_EXECUTABLE_SUFFIX ".js")
 set(CMAKE_VERBOSE_MAKEFILE ON)

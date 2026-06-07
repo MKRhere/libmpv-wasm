@@ -22,6 +22,8 @@
 #include <AL/al.h>
 #include <AL/alc.h>
 
+#include "theatre_stream.h"
+
 using namespace emscripten;
 using namespace std;
 
@@ -64,9 +66,15 @@ int main(int argc, char const *argv[]) {
     if (!mpv) die("context init failed");
 
     mpv_set_property_string(mpv, "vo", "libmpv");
+    theatre_stream_register(mpv);
 
     if (mpv_initialize(mpv) < 0)
         die("mpv init failed");
+
+    // stream_cb sources are real streams — enable read-ahead cache so mpv
+    // exposes paused-for-cache / demuxer-cache-state for buffering detection.
+    mpv_set_property_string(mpv, "cache", "yes");
+    mpv_set_property_string(mpv, "demuxer-max-bytes", "150MiB");
 
     // mpv_request_log_messages(mpv, "debug");
 
@@ -323,6 +331,35 @@ void load_file(string path, string options) {
     emscripten_proxy_async(main_queue, side_thread, load_file_proxy, args_ptr);
 }
 
+typedef struct {
+    string path;
+    string options;
+} load_stream_args_t;
+
+void load_stream_proxy(void* args) {
+    load_stream_args_t* load_args = (load_stream_args_t*)args;
+
+    string rel = load_args->path;
+    if (rel.empty() || rel[0] != '/')
+        rel = "/" + rel;
+
+    string uri = string("theatre://") + rel;
+    const char * cmd[] = {"loadfile", uri.c_str(), "replace", "0", load_args->options.c_str(), NULL};
+    mpv_command_async(mpv, 0, cmd);
+    free(args);
+}
+
+void load_stream(string path, string options) {
+    load_stream_args_t* args_ptr = (load_stream_args_t*)malloc(sizeof(load_stream_args_t));
+    args_ptr->path = path;
+    args_ptr->options = options;
+    emscripten_proxy_async(main_queue, side_thread, load_stream_proxy, args_ptr);
+}
+
+void set_stream_base_url(string base_url) {
+    theatre_stream_set_base_url(base_url.c_str());
+}
+
 void load_files(vector<string> paths) {
     // printf("loading %lu paths\n", paths.size());
 
@@ -520,6 +557,8 @@ EMSCRIPTEN_BINDINGS(libmpv) {
     register_vector<string>("StringVector");
 
     emscripten::function("loadFile", &load_file);
+    emscripten::function("loadStream", &load_stream);
+    emscripten::function("setStreamBaseUrl", &set_stream_base_url);
     emscripten::function("loadFiles", &load_files);
     emscripten::function("togglePlay", &toggle_play);
     emscripten::function("stop", &stop);
