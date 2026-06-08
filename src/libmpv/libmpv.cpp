@@ -30,6 +30,8 @@ using namespace std;
 static Uint32 wakeup_on_mpv_render_update, wakeup_on_mpv_events;
 int width = 1920;
 int height = 1080;
+int viewport_width = 0;
+int viewport_height = 0;
 int64_t video_width = 1920;
 int64_t video_height = 1080;
 SDL_Window *window;
@@ -75,8 +77,9 @@ int main(int argc, char const *argv[]) {
     // exposes paused-for-cache / demuxer-cache-state for buffering detection.
     mpv_set_property_string(mpv, "cache", "yes");
     mpv_set_property_string(mpv, "demuxer-max-bytes", "150MiB");
+    mpv_set_property_string(mpv, "keepaspect", "yes");
 
-    // mpv_request_log_messages(mpv, "debug");
+    mpv_request_log_messages(mpv, "v");
 
     if (SDL_Init(SDL_INIT_VIDEO) < 0)
         die("SDL init failed");
@@ -124,6 +127,8 @@ int main(int argc, char const *argv[]) {
     mpv_observe_property(mpv, 0, "chapter", MPV_FORMAT_INT64);
     mpv_observe_property(mpv, 0, "metadata/by-key/title", MPV_FORMAT_STRING);
     mpv_observe_property(mpv, 0, "playlist-current-pos", MPV_FORMAT_INT64);
+    mpv_observe_property(mpv, 0, "dwidth", MPV_FORMAT_INT64);
+    mpv_observe_property(mpv, 0, "dheight", MPV_FORMAT_INT64);
 
     emscripten_set_main_loop(main_loop, 0, 1);
 
@@ -161,7 +166,9 @@ void main_loop() {
                             break;
                         case MPV_EVENT_LOG_MESSAGE: {
                             mpv_event_log_message *msg = (mpv_event_log_message*)mp_event->data;
-                            printf("log: %s", msg->text);
+                            EM_ASM({
+                                console.warn('[mpv]', UTF8ToString($0), UTF8ToString($1));
+                            }, msg->prefix, msg->text);
                             break;
                         }
                         case MPV_EVENT_FILE_LOADED:
@@ -171,9 +178,17 @@ void main_loop() {
                         case MPV_EVENT_START_FILE:
                             EM_ASM(postMessage(JSON.stringify({ type: 'file-start' })););
                             break;
-                        case MPV_EVENT_END_FILE:
-                            EM_ASM(postMessage(JSON.stringify({ type: 'file-end' })););
+                        case MPV_EVENT_END_FILE: {
+                            mpv_event_end_file *ev = (mpv_event_end_file *)mp_event->data;
+                            EM_ASM({
+                                postMessage(JSON.stringify({
+                                    type: 'file-end',
+                                    reason: $0,
+                                    error: $1,
+                                }));
+                            }, (int)ev->reason, ev->error);
                             break;
+                        }
                         case MPV_EVENT_GET_PROPERTY_REPLY:
                         case MPV_EVENT_PROPERTY_CHANGE: {
                             mpv_event_property *evt = (mpv_event_property*)mp_event->data;
@@ -279,7 +294,14 @@ void main_loop() {
             }
     }
     if (redraw) {
-        mpv_opengl_fbo fbo = { 0, width, height };
+        int draw_w = 0;
+        int draw_h = 0;
+        SDL_GetWindowSize(window, &draw_w, &draw_h);
+        if (draw_w <= 0 || draw_h <= 0) {
+            draw_w = width;
+            draw_h = height;
+        }
+        mpv_opengl_fbo fbo = { 0, draw_w, draw_h };
         int flip_y = 1;
         mpv_render_param params[] = {
             {MPV_RENDER_PARAM_OPENGL_FBO, &fbo},
@@ -319,8 +341,13 @@ void load_file_proxy(void* args) {
         return;
     }
 
-    const char * cmd[] = {"loadfile", path.c_str(), "replace", "0", load_file_args->options.c_str(), NULL};
-    mpv_command_async(mpv, 0, cmd);
+    if (load_file_args->options.empty()) {
+        const char *cmd[] = {"loadfile", path.c_str(), "replace", NULL};
+        mpv_command_async(mpv, 0, cmd);
+    } else {
+        const char *cmd[] = {"loadfile", path.c_str(), "replace", load_file_args->options.c_str(), NULL};
+        mpv_command_async(mpv, 0, cmd);
+    }
     free(args);
 }
 
@@ -344,8 +371,13 @@ void load_stream_proxy(void* args) {
         rel = "/" + rel;
 
     string uri = string("theatre://") + rel;
-    const char * cmd[] = {"loadfile", uri.c_str(), "replace", "0", load_args->options.c_str(), NULL};
-    mpv_command_async(mpv, 0, cmd);
+    if (load_args->options.empty()) {
+        const char *cmd[] = {"loadfile", uri.c_str(), "replace", NULL};
+        mpv_command_async(mpv, 0, cmd);
+    } else {
+        const char *cmd[] = {"loadfile", uri.c_str(), "replace", load_args->options.c_str(), NULL};
+        mpv_command_async(mpv, 0, cmd);
+    }
     free(args);
 }
 
@@ -375,6 +407,11 @@ void load_files(vector<string> paths) {
 void toggle_play() {
     const char * cmd[] = {"cycle", "pause", NULL};
     mpv_command_async(mpv, 0, cmd);
+}
+
+void set_paused(bool paused) {
+    int flag = paused ? 1 : 0;
+    mpv_set_property_async(mpv, 0, "pause", MPV_FORMAT_FLAG, &flag);
 }
 
 void stop() {
@@ -482,17 +519,27 @@ void quit() {
     printf("properly terminated\n");
 }
 
+void set_viewport_size(int w, int h) {
+    viewport_width = w > 0 ? w : 0;
+    viewport_height = h > 0 ? h : 0;
+}
+
 void match_window_screen_size() {
-    emscripten_get_screen_size(&width, &height);
-        
-    double aspect_ratio = (double)video_height / video_width;
-    int new_height = height;
-    if (aspect_ratio != (double)height / width)
-        new_height = aspect_ratio * width;
+    if (viewport_width > 0 && viewport_height > 0) {
+        width = viewport_width;
+        height = viewport_height;
+    } else if (viewport_width > 0) {
+        width = viewport_width;
+        height = width;
+        if (video_width > 0 && video_height > 0) {
+            const double aspect_ratio = (double)video_height / video_width;
+            height = (int)(aspect_ratio * width);
+        }
+    } else {
+        emscripten_get_screen_size(&width, &height);
+    }
 
-    SDL_SetWindowSize(window, width, new_height);
-
-    // printf("video: %lldx%lld -> screen: %dx%d = canvas: %dx%d\n", video_width, video_height, width, height, width, new_height);
+    SDL_SetWindowSize(window, width, height);
 }
 
 void create_mpv_map_obj(mpv_node_list *map) {
@@ -543,8 +590,6 @@ void create_mpv_map_obj(mpv_node_list *map) {
     if (is_video && is_first) {
         video_width = w;
         video_height = h;
-
-        match_window_screen_size();
     }
 }
 
@@ -561,6 +606,7 @@ EMSCRIPTEN_BINDINGS(libmpv) {
     emscripten::function("setStreamBaseUrl", &set_stream_base_url);
     emscripten::function("loadFiles", &load_files);
     emscripten::function("togglePlay", &toggle_play);
+    emscripten::function("setPaused", &set_paused);
     emscripten::function("stop", &stop);
     emscripten::function("setPlaybackTime", &set_playback_time_pos);
     emscripten::function("setVolume", &set_ao_volume);
@@ -576,5 +622,7 @@ EMSCRIPTEN_BINDINGS(libmpv) {
     emscripten::function("addShaders", &add_shaders);
     emscripten::function("clearShaders", &clear_shaders);
     emscripten::function("getShaderCount", &get_shader_count);
+    emscripten::function("setViewportSize", &set_viewport_size);
     emscripten::function("matchWindowScreenSize", &match_window_screen_size);
+    emscripten::function("theatreFetchRegionPtr", &theatre_fetch_region_ptr);
 }

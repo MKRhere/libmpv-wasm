@@ -25,10 +25,10 @@ add_executable(libmpv src/libmpv/libmpv.cpp src/libmpv/theatre_stream.cpp)
 set(CMAKE_EXECUTABLE_SUFFIX ".js")
 set(CMAKE_VERBOSE_MAKEFILE ON)
 
-set_target_properties(libmpv PROPERTIES LINK_FLAGS "-lembind -lopenal -lexternalfs.js --preload-file ../shaders@/shaders --emit-tsd libmpv.d.ts \
--sUSE_PTHREADS -sPROXY_TO_PTHREAD -sPTHREAD_POOL_SIZE=20 -sWASMFS -sMODULARIZE -sINITIAL_MEMORY=2GB -sOFFSCREENCANVAS_SUPPORT \
+set_target_properties(libmpv PROPERTIES LINK_FLAGS "-O2 -sASSERTIONS=0 -lembind -lopenal -lexternalfs.js --preload-file ../shaders@/shaders --emit-tsd libmpv.d.ts \
+-sUSE_PTHREADS -sPROXY_TO_PTHREAD -sPTHREAD_POOL_SIZE=8 -sWASMFS -sMODULARIZE -sINITIAL_MEMORY=512MB -sALLOW_MEMORY_GROWTH -sMAXIMUM_MEMORY=2GB -sOFFSCREENCANVAS_SUPPORT \
 -sFULL_ES3 -sWASM_BIGINT -sENVIRONMENT=web,worker -sEXPORTED_RUNTIME_METHODS=['PThread','ExternalFS','getPromise'] -sEXPORT_NAME='libmpvLoader'")
-set_target_properties(libmpv PROPERTIES COMPILE_FLAGS "-sUSE_PTHREADS")
+set_target_properties(libmpv PROPERTIES COMPILE_FLAGS "-O2 -sUSE_PTHREADS")
 
 add_definitions(
     ${MPV_CFLAGS_OTHER}
